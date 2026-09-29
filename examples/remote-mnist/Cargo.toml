@@ -1,0 +1,17 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "remote-mnist"
+publish = false
+version.workspace = true
+description = "Train and run the MNIST model on another machine's GPU through the remote backend"
+
+[lints]
+workspace = true
+
+[dependencies]
+burn = { workspace = true, features = ["remote", "remote-websocket", "fusion"] }
+mnist = { path = "../mnist" }
+blake3 = "1"
+iroh = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
