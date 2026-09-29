@@ -9028,6 +9028,7 @@ version = "0.22.0-pre.4"
 dependencies = [
  "blake3",
  "burn",
+ "clap",
  "iroh",
  "mnist",
  "tokio",

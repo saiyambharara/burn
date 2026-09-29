@@ -1,3 +1,5 @@
+use std::{convert::Infallible, str::FromStr};
+
 use burn::{
     data::{
         dataloader::batcher::Batcher,
@@ -5,6 +7,7 @@ use burn::{
     },
     prelude::*,
     store::ModuleRecord,
+    tensor::Transaction,
 };
 use iroh::{
     Endpoint, EndpointId, SecretKey,
@@ -17,8 +20,10 @@ use mnist::{
 };
 
 const TEST_IMAGES: usize = 1000;
+const SHOWN_PREDICTIONS: usize = 10;
 
 /// A machine running the `server` example.
+#[derive(Clone, Debug)]
 pub enum Server {
     /// Started with `REMOTE_BACKEND_TOPIC` set to this topic.
     Iroh { topic: String },
@@ -26,24 +31,31 @@ pub enum Server {
     WebSocket { url: String },
 }
 
-impl Server {
-    pub fn parse(address: &str) -> Self {
-        match address.starts_with("ws://") || address.starts_with("wss://") {
-            true => Self::WebSocket {
-                url: address.to_string(),
-            },
-            false => Self::Iroh {
-                topic: address.to_string(),
-            },
-        }
-    }
+impl FromStr for Server {
+    type Err = Infallible;
 
+    fn from_str(address: &str) -> Result<Self, Self::Err> {
+        let server = if address.starts_with("ws://") || address.starts_with("wss://") {
+            Self::WebSocket {
+                url: address.to_string(),
+            }
+        } else {
+            Self::Iroh {
+                topic: address.to_string(),
+            }
+        };
+        Ok(server)
+    }
+}
+
+impl Server {
     /// The server's first device.
     pub async fn connect(&self) -> Device {
         match self {
             Self::WebSocket { url } => Device::remote_websocket(url, 0),
             Self::Iroh { topic } => {
-                // https://github.com/n0-computer/iroh/issues/4555
+                // Segmentation offload can stall transfers until
+                // https://github.com/n0-computer/iroh/issues/4555 is fixed.
                 let transport = QuicTransportConfig::builder()
                     .enable_segmentation_offload(false)
                     .build();
@@ -58,7 +70,7 @@ impl Server {
     }
 }
 
-/// Classify the first test images with the model `train` saved, on `device`.
+/// Classify the first test images on `device` with the model `train` saved.
 pub fn infer(device: &Device) {
     let record = ModuleRecord::load(format!("{ARTIFACT_DIR}/model"))
         .expect("A trained model exists; run train first");
@@ -70,20 +82,26 @@ pub fn infer(device: &Device) {
         .map(|index| mapper.map(&dataset.get(index).expect("MNIST has this many test images")))
         .collect();
     let batch = MnistBatcher::default().batch(items, device);
-
     let predicted = model.forward(batch.images).argmax(1).flatten::<1>(0, 1);
-    let correct: i64 = predicted
-        .clone()
-        .equal(batch.targets.clone())
-        .int()
-        .sum()
-        .into_scalar();
 
-    let predicted = predicted.into_data();
-    let expected = batch.targets.into_data();
-    for (predicted, expected) in predicted.iter::<i64>().zip(expected.iter::<i64>()).take(10) {
+    // Both tensors come back in one round trip to the server.
+    let [predicted, expected] = Transaction::default()
+        .register(predicted)
+        .register(batch.targets)
+        .execute()
+        .try_into()
+        .expect("One result per registered tensor");
+    let predicted: Vec<i64> = predicted.iter().collect();
+    let expected: Vec<i64> = expected.iter().collect();
+
+    for (predicted, expected) in predicted.iter().zip(&expected).take(SHOWN_PREDICTIONS) {
         println!("predicted {predicted}, expected {expected}");
     }
+    let correct = predicted
+        .iter()
+        .zip(&expected)
+        .filter(|(predicted, expected)| predicted == expected)
+        .count();
     println!(
         "accuracy on {TEST_IMAGES} test images: {:.2}%",
         100.0 * correct as f64 / TEST_IMAGES as f64

@@ -1,25 +1,32 @@
+use clap::{Parser, ValueEnum};
 use remote_mnist::Server;
+
+/// Train the MNIST model on another machine's GPU, or classify test images with it there.
+#[derive(Parser)]
+struct Cli {
+    mode: Mode,
+    /// The topic the server was started with, or its `ws://` URL.
+    server: Server,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Mode {
+    /// Train the model on the server's GPU and save it here.
+    Train,
+    /// Classify test images on the server's GPU with the saved model.
+    Infer,
+}
 
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let (Some(mode), Some(server)) = (args.get(1), args.get(2)) else {
-        usage();
-    };
-    let device = Server::parse(server).connect().await;
+    let cli = Cli::parse();
+    let device = cli.server.connect().await;
 
-    match mode.as_str() {
-        "train" => mnist::training::run(device),
-        "infer" => remote_mnist::infer(&device),
-        _ => usage(),
-    }
-}
-
-fn usage() -> ! {
-    eprintln!("usage:");
-    eprintln!("  train <server>   train the MNIST model on the server's GPU");
-    eprintln!("  infer <server>   classify test images with the trained model on the server's GPU");
-    eprintln!();
-    eprintln!("<server> is the topic the server was started with, or its ws:// URL");
-    std::process::exit(1);
+    // Training and inference block for as long as they run, so they stay off the async workers.
+    tokio::task::spawn_blocking(move || match cli.mode {
+        Mode::Train => mnist::training::run(device),
+        Mode::Infer => remote_mnist::infer(&device),
+    })
+    .await
+    .expect("The run completes");
 }

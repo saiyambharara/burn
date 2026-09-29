@@ -13,5 +13,6 @@ workspace = true
 burn = { workspace = true, features = ["remote", "remote-websocket", "fusion"] }
 mnist = { path = "../mnist" }
 blake3 = "1"
+clap = { workspace = true }
 iroh = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

@@ -17,7 +17,11 @@ pub fn start() {
                 secret: Box::new(secret),
             }
         }
-        Err(_) => Channel::WebSocket { port: port() },
+        Err(_) => {
+            let port = port();
+            println!("listening on websocket port {port}");
+            Channel::WebSocket { port }
+        }
     };
 
     burn::server::start(Device::default(), channel);
@@ -33,8 +37,7 @@ fn port() -> u16 {
 }
 
 /// Anyone who knows the topic can host as this identity, which suits an example; a real deployment
-/// would use `RemoteSecret::random()` and share its `id()`. Matches the derivation of the
-/// `p2p-remote-training` and `remote-mnist` examples.
+/// would use `RemoteSecret::random()` and share its `id()`. Clients derive the id the same way.
 fn topic_secret(topic: &str) -> RemoteSecret {
     let hash = blake3::hash(format!("burn-p2p:{topic}").as_bytes());
     RemoteSecret::from_bytes(*hash.as_bytes())
