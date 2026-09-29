@@ -15,27 +15,44 @@ The GPU machine runs the [server example](../server) with its backend feature (`
 
 ## Iroh
 
-Iroh finds the server by its identity, so the client can reach it from another network, behind a
-NAT, without knowing its address. Here the identity derives from a topic both sides agree on.
+Iroh connects two machines by identity rather than by address, end-to-end encrypted, and gets
+through NATs and firewalls. The server only serves clients that present its token.
 
-On the GPU machine:
-
-```bash
-REMOTE_BACKEND_TOPIC=my-gpu cargo run -p server --example server --release --features cuda
-```
-
-On the client:
+Pick a token on the GPU machine and start the server:
 
 ```bash
-cargo run -p remote-mnist --example remote-mnist --release -- train my-gpu
-cargo run -p remote-mnist --example remote-mnist --release -- infer my-gpu
+export REMOTE_BACKEND_TOKEN=$(openssl rand -hex 32)
+REMOTE_BACKEND_TRANSPORT=iroh cargo run -p server --example server --release --features cuda
 ```
 
-Anyone who knows the topic can connect, or host a server under it. Pick one that is hard to guess.
+It prints its id, `listening on iroh as <id>`. The id comes from a key the server creates in
+`remote-backend.key` on its first start, or wherever `REMOTE_BACKEND_KEY` points, so it stays the
+same across restarts. Keep that file private: whoever holds it can pose as the server.
+
+On the client, with the same token:
+
+```bash
+export REMOTE_BACKEND_TOKEN=<the server's token>
+cargo run -p remote-mnist --example remote-mnist --release -- train <id>
+cargo run -p remote-mnist --example remote-mnist --release -- infer <id>
+```
+
+### Relays
+
+A relay forwards traffic between peers that cannot reach each other directly. It only sees
+encrypted packets, and peers switch to a direct connection whenever they can. Both ends must use the
+same setting.
+
+| Server `REMOTE_BACKEND_RELAY` | Client flags | What happens |
+|---|---|---|
+| `public` (default) | none | n0's public relays, and n0's lookup finds the server by its id. |
+| `https://relay.example.com` | `--relay https://relay.example.com` | A relay you run, such as [iroh-relay](https://github.com/n0-computer/iroh/tree/main/iroh-relay); nothing goes through n0. |
+| `off`, with `REMOTE_BACKEND_PORT=4433` | `--relay off --address gpu-host:4433` | Direct only; the client must be able to reach that UDP port. |
 
 ## WebSocket
 
-WebSocket needs the server to be reachable at a known address, such as on the same network.
+WebSocket has no token and no encryption: anyone who can reach the port can use the GPU and read
+the traffic. Use it only on a network you trust.
 
 On the GPU machine, listening on port 3000 unless `REMOTE_BACKEND_PORT` says otherwise:
 
@@ -43,7 +60,7 @@ On the GPU machine, listening on port 3000 unless `REMOTE_BACKEND_PORT` says oth
 cargo run -p server --example server --release --features cuda
 ```
 
-On the client, with the server's host name or address:
+On the client:
 
 ```bash
 cargo run -p remote-mnist --example remote-mnist --release -- train ws://gpu-host:3000

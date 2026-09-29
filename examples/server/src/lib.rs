@@ -1,44 +1,30 @@
-use burn::{
-    server::{Channel, RemoteSecret},
-    tensor::Device,
-};
+mod iroh_server;
+
+use burn::{server::Channel, tensor::Device};
+use iroh_server::IrohServer;
 
 /// Host `Device::default()` for remote clients.
 ///
-/// With `REMOTE_BACKEND_TOPIC` set, the server is an Iroh peer whose identity derives from the
-/// topic, so clients that know the topic can dial it. Otherwise it listens on WebSocket at
-/// `REMOTE_BACKEND_PORT`, 3000 by default.
+/// `REMOTE_BACKEND_TRANSPORT` picks how: `websocket` by default, on port `REMOTE_BACKEND_PORT` or
+/// 3000, or `iroh`, configured as [`IrohServer::from_env`] describes.
 pub fn start() {
-    let channel = match std::env::var("REMOTE_BACKEND_TOPIC") {
-        Ok(topic) => {
-            let secret = topic_secret(&topic);
-            println!("listening on iroh as {}", secret.id());
-            Channel::Iroh {
-                secret: Box::new(secret),
-            }
-        }
-        Err(_) => {
-            let port = port();
+    let transport = std::env::var("REMOTE_BACKEND_TRANSPORT");
+    match transport.as_deref() {
+        Err(_) | Ok("websocket") => {
+            let port = port().unwrap_or(3000);
             println!("listening on websocket port {port}");
-            Channel::WebSocket { port }
+            burn::server::start(Device::default(), Channel::WebSocket { port });
         }
-    };
-
-    burn::server::start(Device::default(), channel);
+        Ok("iroh") => IrohServer::from_env().serve(Device::default()),
+        Ok(other) => panic!("REMOTE_BACKEND_TRANSPORT is websocket or iroh, got {other}"),
+    }
 }
 
-fn port() -> u16 {
+fn port() -> Option<u16> {
     std::env::var("REMOTE_BACKEND_PORT")
+        .ok()
         .map(|port| match port.parse::<u16>() {
             Ok(val) => val,
             Err(err) => panic!("Invalid port, got {port} with error {err}"),
         })
-        .unwrap_or(3000)
-}
-
-/// Anyone who knows the topic can host as this identity, which suits an example; a real deployment
-/// would use `RemoteSecret::random()` and share its `id()`. Clients derive the id the same way.
-fn topic_secret(topic: &str) -> RemoteSecret {
-    let hash = blake3::hash(format!("burn-p2p:{topic}").as_bytes());
-    RemoteSecret::from_bytes(*hash.as_bytes())
 }

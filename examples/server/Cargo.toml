@@ -20,3 +20,6 @@ flex = ["burn/flex"]
 [dependencies]
 burn = { workspace = true, features = ["default", "remote-server", "remote-websocket"] }
 blake3 = "1"
+iroh = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }

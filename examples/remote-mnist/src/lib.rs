@@ -1,4 +1,4 @@
-use std::{convert::Infallible, str::FromStr};
+use std::{net::ToSocketAddrs, str::FromStr};
 
 use burn::{
     data::{
@@ -10,8 +10,8 @@ use burn::{
     tensor::Transaction,
 };
 use iroh::{
-    Endpoint, EndpointId, SecretKey,
-    endpoint::{QuicTransportConfig, presets},
+    Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl,
+    endpoint::{Builder, QuicTransportConfig, presets},
 };
 use mnist::{
     data::{MnistBatcher, MnistMapper},
@@ -22,50 +22,87 @@ use mnist::{
 const TEST_IMAGES: usize = 1000;
 const SHOWN_PREDICTIONS: usize = 10;
 
-/// A machine running the `server` example.
-#[derive(Clone, Debug)]
-pub enum Server {
-    /// Started with `REMOTE_BACKEND_TOPIC` set to this topic.
-    Iroh { topic: String },
-    /// Started without a topic, listening at this URL.
-    WebSocket { url: String },
+/// A `server` example started with `REMOTE_BACKEND_TRANSPORT=iroh`.
+pub struct IrohServer {
+    /// The id it printed when it started.
+    pub id: EndpointId,
+    /// Its `REMOTE_BACKEND_TOKEN`.
+    pub token: String,
+    /// Its `REMOTE_BACKEND_RELAY`.
+    pub relay: Relay,
+    /// Its `host:port`, required when relays are off.
+    pub address: Option<String>,
 }
 
-impl FromStr for Server {
-    type Err = Infallible;
+impl IrohServer {
+    /// The server's first device.
+    pub async fn connect(&self) -> Device {
+        // Segmentation offload can stall transfers until
+        // https://github.com/n0-computer/iroh/issues/4555 is fixed.
+        let transport = QuicTransportConfig::builder()
+            .enable_segmentation_offload(false)
+            .build();
+        let endpoint = self
+            .relay
+            .endpoint()
+            .transport_config(transport)
+            .bind()
+            .await
+            .expect("Can bind an iroh endpoint");
+        Device::remote_iroh_authorized(&endpoint, self.addr(), 0, self.token.as_bytes().to_vec())
+    }
 
-    fn from_str(address: &str) -> Result<Self, Self::Err> {
-        let server = if address.starts_with("ws://") || address.starts_with("wss://") {
-            Self::WebSocket {
-                url: address.to_string(),
-            }
-        } else {
-            Self::Iroh {
-                topic: address.to_string(),
-            }
-        };
-        Ok(server)
+    fn addr(&self) -> EndpointAddr {
+        let mut addr = EndpointAddr::new(self.id);
+        if let Relay::Private(url) = &self.relay {
+            addr = addr.with_relay_url(url.clone());
+        }
+        if let Some(address) = &self.address {
+            let address = address
+                .to_socket_addrs()
+                .ok()
+                .and_then(|mut addresses| addresses.next())
+                .unwrap_or_else(|| panic!("{address} resolves to an address"));
+            addr = addr.with_ip_addr(address);
+        }
+        addr
     }
 }
 
-impl Server {
-    /// The server's first device.
-    pub async fn connect(&self) -> Device {
+/// How peers that cannot dial each other directly reach one another. Both ends must agree.
+#[derive(Clone, Debug)]
+pub enum Relay {
+    /// n0's public relays, with n0's address lookup so a server is found by its id alone.
+    Public,
+    /// A relay you run.
+    Private(RelayUrl),
+    /// Direct connections only.
+    Off,
+}
+
+impl FromStr for Relay {
+    type Err = String;
+
+    fn from_str(relay: &str) -> Result<Self, Self::Err> {
+        match relay {
+            "public" => Ok(Self::Public),
+            "off" => Ok(Self::Off),
+            url => url
+                .parse()
+                .map(Self::Private)
+                .map_err(|err| format!("a relay is public, off or a URL, got {url}: {err}")),
+        }
+    }
+}
+
+impl Relay {
+    fn endpoint(&self) -> Builder {
         match self {
-            Self::WebSocket { url } => Device::remote_websocket(url, 0),
-            Self::Iroh { topic } => {
-                // Segmentation offload can stall transfers until
-                // https://github.com/n0-computer/iroh/issues/4555 is fixed.
-                let transport = QuicTransportConfig::builder()
-                    .enable_segmentation_offload(false)
-                    .build();
-                let endpoint = Endpoint::builder(presets::N0)
-                    .transport_config(transport)
-                    .bind()
-                    .await
-                    .expect("Can bind an iroh endpoint");
-                Device::remote_iroh(&endpoint, topic_id(topic), 0)
+            Self::Public => Endpoint::builder(presets::N0),
+            Self::Private(url) => {
+                Endpoint::builder(presets::Minimal).relay_mode(RelayMode::custom([url.clone()]))
             }
+            Self::Off => Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Disabled),
         }
     }
 }
@@ -106,10 +143,4 @@ pub fn infer(device: &Device) {
         "accuracy on {TEST_IMAGES} test images: {:.2}%",
         100.0 * correct as f64 / TEST_IMAGES as f64
     );
-}
-
-/// Must match the `server` example's derivation, or the client dials an identity nobody hosts.
-fn topic_id(topic: &str) -> EndpointId {
-    let hash = blake3::hash(format!("burn-p2p:{topic}").as_bytes());
-    SecretKey::from_bytes(hash.as_bytes()).public()
 }

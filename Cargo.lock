@@ -9653,6 +9653,9 @@ version = "0.22.0-pre.4"
 dependencies = [
  "blake3",
  "burn",
+ "iroh",
+ "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]
