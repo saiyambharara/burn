@@ -3,7 +3,7 @@ use std::str::FromStr;
 use burn::tensor::Device;
 use clap::{CommandFactory, Parser, ValueEnum, error::ErrorKind};
 use iroh::EndpointId;
-use remote_mnist::{IrohServer, Relay};
+use remote_mnist::connection::{IrohServer, Relay};
 
 /// Train the MNIST model on another machine's GPU, or classify test images with it there.
 #[derive(Parser)]
@@ -77,7 +77,7 @@ async fn main() {
     // Training and inference block for as long as they run, so they stay off the async workers.
     tokio::task::spawn_blocking(move || match cli.mode {
         Mode::Train => mnist::training::run(device),
-        Mode::Infer => remote_mnist::infer(&device),
+        Mode::Infer => remote_mnist::inference::infer(&device),
     })
     .await
     .expect("The run completes");
